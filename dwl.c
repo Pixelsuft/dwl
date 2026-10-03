@@ -523,11 +523,6 @@ static struct wl_listener start_drag = {.notify = startdrag};
 static struct wl_listener new_session_lock = {.notify = locksession};
 static struct wl_listener new_foreign_toplevel_capture_request = {.notify = capturerequest};
 
-static struct xkb_rule_names en_rules;
-static struct xkb_context *en_context;
-static struct xkb_keymap *en_keymap;
-static struct xkb_state *en_state;
-
 #ifdef XWAYLAND
 static void activatex11(struct wl_listener *listener, void *data);
 static void associatex11(struct wl_listener *listener, void *data);
@@ -1072,9 +1067,6 @@ cleanup(void)
 	wlr_backend_destroy(backend);
 
 	wl_display_destroy(dpy);
-	xkb_state_unref(en_state);
-	xkb_keymap_unref(en_keymap);
-	xkb_context_unref(en_context);
 	/* Destroy after the wayland display (when the monitors are already destroyed)
 	   to avoid destroying them with an invalid scene output. */
 	wlr_scene_node_destroy(&scene->tree.node);
@@ -2178,18 +2170,12 @@ keypress(struct wl_listener *listener, void *data)
 	/* This event is raised when a key is pressed or released. */
 	KeyboardGroup *group = wl_container_of(listener, group, key);
 	struct wlr_keyboard_key_event *event = data;
-	int handled;
 
 	/* Translate libinput keycode -> xkbcommon */
 	uint32_t keycode = event->keycode + 8;
 	struct wlr_keyboard *kb = &group->wlr_group->keyboard;
-
-	xkb_state_update_key(en_state, keycode,
-			(event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
-			? XKB_KEY_DOWN : XKB_KEY_UP);
-
-	xkb_layout_index_t layout = xkb_state_key_get_layout(en_state, keycode);
-	handled = 0;
+	xkb_layout_index_t layout = xkb_state_key_get_layout(kb->xkb_state, keycode);
+	int handled = 0;
 
 	// Get the keysyms for level 0 (normal) and level 1 (shifted)
 	// Only one keysym for each level:
@@ -3194,12 +3180,6 @@ setup(void)
 	 * pointer, touch, and drawing tablet device. We also rig up a listener to
 	 * let us know when new input devices are available on the backend.
 	 */
-	en_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	en_rules = *xkb_rules;
-	en_rules.layout = "us";
-	en_keymap = xkb_keymap_new_from_names(en_context, &en_rules,
-		XKB_KEYMAP_COMPILE_NO_FLAGS);
-	en_state = xkb_state_new(en_keymap);
 	wl_signal_add(&backend->events.new_input, &new_input_device);
 	virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(dpy);
 	wl_signal_add(&virtual_keyboard_mgr->events.new_virtual_keyboard,
