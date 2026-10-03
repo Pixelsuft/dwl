@@ -764,7 +764,7 @@ assignkeymap(struct wlr_keyboard *keyboard) {
 	}
 
 	if (locked_mods)
-		wlr_keyboard_notify_modifiers(&group->wlr_group->keyboard, 0, 0, locked_mods, 0);
+		wlr_keyboard_notify_modifiers(keyboard, 0, 0, locked_mods, 0);
 
 	xkb_keymap_unref(keymap);
 	xkb_context_unref(context);
