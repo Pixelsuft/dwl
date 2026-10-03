@@ -36,6 +36,24 @@ static const char *const autostart[] = {
         NULL /* terminate */
 };
 
+static const Env envs[] = {
+	/* variable			value */
+	// Force wayland
+	{ "XDG_CURRENT_DESKTOP",	"wlroots" },
+	{ "GDK_BACKEND", "wayland" },
+	{ "QT_QPA_PLATFORM", "wayland" },
+	{ "ELECTRON_OZONE_PLATFORM_HINT", "wayland" },
+	{ "MOZ_ENABLE_WAYLAND", "1" },
+	{ "SDL_VIDEODRIVER", "wayland" },
+	{ "CLUTTER_BACKEND", "wayland" },
+	{ "_JAVA_AWT_WM_NONREPARENTING", "1" },
+	// Force pipewire
+	{ "SDL_AUDIODRIVER", "pipewire" },
+	// Force adwaita
+	{ "QT_QPA_PLATFORMTHEME", "qt6ct" },
+	{ "GTK_THEME", "Adwaita" }
+};
+
 static const Rule rules[] = {
 	/* app_id             title       tags mask     isfloating   monitor */
 	{ "Gimp_EXAMPLE",     NULL,       0,            1,           -1 }, /* Start on currently visible tags floating, not tiled */
