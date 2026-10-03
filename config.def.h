@@ -18,6 +18,7 @@ static uint32_t colors[][3]                = {
 	/*               fg          bg          border    */
 	[SchemeNorm] = { 0xbbbbbbff, 0x222222ff, 0x444444ff },
 	[SchemeSel]  = { 0xeeeeeeff, 0x005577ff, 0x005577ff },
+    [SchemeHid]  = { 0x005577ff, 0x222222ff, 0x005577ff },
 	[SchemeUrg]  = { 0,          0,          0x770000ff },
 };
 
@@ -130,8 +131,13 @@ static const Key keys[] = {
 	{ MODKEY,                    XKB_KEY_p,           spawn,            {.v = menucmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Return,      spawn,            {.v = termcmd} },
 	{ MODKEY,                    XKB_KEY_b,           togglebar,        {0} },
-	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
-	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
+	{ MODKEY,                    XKB_KEY_j,           focusstackvis,    {.i = +1} },
+	{ MODKEY,                    XKB_KEY_k,           focusstackvis,    {.i = -1} },
+    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_j,           focusstackhid,    {.i = +1} },
+	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_k,           focusstackhid,    {.i = -1} },
+	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_h,           hide,             {0} },
+	{ MODKEY,                    XKB_KEY_s,           show,             {0} },
+    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_s,           showall,          {0} },
 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },
 	{ MODKEY,                    XKB_KEY_d,           incnmaster,       {.i = -1} },
 	{ MODKEY,                    XKB_KEY_h,           setmfact,         {.f = -0.05f} },
@@ -175,7 +181,7 @@ static const Key keys[] = {
 static const Button buttons[] = {
 	{ ClkLtSymbol, 0,      BTN_LEFT,   setlayout,      {.v = &layouts[0]} },
 	{ ClkLtSymbol, 0,      BTN_RIGHT,  setlayout,      {.v = &layouts[2]} },
-	{ ClkTitle,    0,      BTN_MIDDLE, zoom,           {0} },
+	{ ClkTitle,    0,      BTN_LEFT,   togglewin,      {0} },
 	{ ClkStatus,   0,      BTN_MIDDLE, spawn,          {.v = termcmd} },
 	{ ClkClient,   MODKEY, BTN_LEFT,   moveresize,     {.ui = CurMove} },
 	{ ClkClient,   MODKEY, BTN_MIDDLE, togglefloating, {0} },

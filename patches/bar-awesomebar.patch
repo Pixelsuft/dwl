@@ -1,0 +1,405 @@
+From c712e2f23e9dbe28ee1e9ba461056f1533aabbaa Mon Sep 17 00:00:00 2001
+From: Ricardo <dandgg.ftw@gmail.com>
+Date: Mon, 3 Aug 2026 00:31:37 +0100
+Subject: [PATCH] awesomebar
+
+---
+ config.def.h |  12 +++-
+ dwl.c        | 195 ++++++++++++++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 186 insertions(+), 21 deletions(-)
+
+diff --git a/config.def.h b/config.def.h
+index 7da50d2..1dca4a2 100644
+--- a/config.def.h
++++ b/config.def.h
+@@ -17,6 +17,7 @@ static uint32_t colors[][3]                = {
+ 	/*               fg          bg          border    */
+ 	[SchemeNorm] = { 0xbbbbbbff, 0x222222ff, 0x444444ff },
+ 	[SchemeSel]  = { 0xeeeeeeff, 0x005577ff, 0x005577ff },
++    [SchemeHid]  = { 0x005577ff, 0x222222ff, 0x005577ff },
+ 	[SchemeUrg]  = { 0,          0,          0x770000ff },
+ };
+ 
+@@ -130,8 +131,13 @@ static const Key keys[] = {
+ 	{ MODKEY,                    XKB_KEY_p,           spawn,            {.v = menucmd} },
+ 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Return,      spawn,            {.v = termcmd} },
+ 	{ MODKEY,                    XKB_KEY_b,           togglebar,        {0} },
+-	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
+-	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
++	{ MODKEY,                    XKB_KEY_j,           focusstackvis,    {.i = +1} },
++	{ MODKEY,                    XKB_KEY_k,           focusstackvis,    {.i = -1} },
++    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_j,           focusstackhid,    {.i = +1} },
++	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_k,           focusstackhid,    {.i = -1} },
++	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_h,           hide,             {0} },
++	{ MODKEY,                    XKB_KEY_s,           show,             {0} },
++    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_s,           showall,          {0} },
+ 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },
+ 	{ MODKEY,                    XKB_KEY_d,           incnmaster,       {.i = -1} },
+ 	{ MODKEY,                    XKB_KEY_h,           setmfact,         {.f = -0.05f} },
+@@ -175,7 +181,7 @@ static const Key keys[] = {
+ static const Button buttons[] = {
+ 	{ ClkLtSymbol, 0,      BTN_LEFT,   setlayout,      {.v = &layouts[0]} },
+ 	{ ClkLtSymbol, 0,      BTN_RIGHT,  setlayout,      {.v = &layouts[2]} },
+-	{ ClkTitle,    0,      BTN_MIDDLE, zoom,           {0} },
++	{ ClkTitle,    0,      BTN_LEFT,   togglewin,      {0} },
+ 	{ ClkStatus,   0,      BTN_MIDDLE, spawn,          {.v = termcmd} },
+ 	{ ClkClient,   MODKEY, BTN_LEFT,   moveresize,     {.ui = CurMove} },
+ 	{ ClkClient,   MODKEY, BTN_MIDDLE, togglefloating, {0} },
+diff --git a/dwl.c b/dwl.c
+index 7fe9468..0d325b3 100644
+--- a/dwl.c
++++ b/dwl.c
+@@ -79,7 +79,8 @@
+ #define MAX(A, B)               ((A) > (B) ? (A) : (B))
+ #define MIN(A, B)               ((A) < (B) ? (A) : (B))
+ #define CLEANMASK(mask)         (mask & ~WLR_MODIFIER_CAPS)
+-#define VISIBLEON(C, M)         ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]))
++#define VISIBLEON(C, M)         ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]) && !(C)->ishidden)
++#define VISIBLE(C, M)           ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]))
+ #define LENGTH(X)               (sizeof X / sizeof X[0])
+ #define END(A)                  ((A) + LENGTH(A))
+ #define TAGMASK                 ((1u << LENGTH(tags)) - 1)
+@@ -88,7 +89,7 @@
+ #define TEXTW(mon, text)        (drwl_font_getwidth(mon->drw, text) + mon->lrpad)
+ 
+ /* enums */
+-enum { SchemeNorm, SchemeSel, SchemeUrg }; /* color schemes */
++enum { SchemeNorm, SchemeSel, SchemeHid, SchemeUrg }; /* color schemes */
+ enum { CurNormal, CurPressed, CurMove, CurResize }; /* cursor */
+ enum { XDGShell, LayerShell, X11 }; /* client types */
+ enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrTop, LyrFS, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
+@@ -148,6 +149,7 @@ typedef struct {
+ 	uint32_t tags;
+ 	int isfloating, isurgent, isfullscreen;
+ 	uint32_t resize; /* configure serial of a pending resize */
++    int ishidden, tempshow;
+ } Client;
+ 
+ typedef struct {
+@@ -216,6 +218,7 @@ struct Monitor {
+ 		int width, height;
+ 		int real_width, real_height; /* non-scaled */
+ 		float scale;
++        int bt, btw; /* awesome bar */
+ 	} b; /* bar area */
+ 	struct wlr_box w; /* window area, layout-relative */
+ 	struct wl_list layers[4]; /* LayerSurface.link */
+@@ -319,11 +322,14 @@ static void drawbar(Monitor *m);
+ static void drawbars(void);
+ static void focusclient(Client *c, int lift);
+ static void focusmon(const Arg *arg);
+-static void focusstack(const Arg *arg);
++static void focusstack(const Arg *arg, int hid);
++static void focusstackhid(const Arg *arg);
++static void focusstackvis(const Arg *arg);
+ static Client *focustop(Monitor *m);
+ static void fullscreennotify(struct wl_listener *listener, void *data);
+ static void gpureset(struct wl_listener *listener, void *data);
+ static void handlesig(int signo);
++static void hide(const Arg *arg);
+ static void incnmaster(const Arg *arg);
+ static void inputdevice(struct wl_listener *listener, void *data);
+ static int keybinding(uint32_t mods, xkb_keysym_t sym);
+@@ -363,6 +369,8 @@ static void setmon(Client *c, Monitor *m, uint32_t newtags);
+ static void setpsel(struct wl_listener *listener, void *data);
+ static void setsel(struct wl_listener *listener, void *data);
+ static void setup(void);
++static void show(const Arg *arg);
++static void showall(const Arg *arg);
+ static void spawn(const Arg *arg);
+ static void startdrag(struct wl_listener *listener, void *data);
+ static int statusin(int fd, unsigned int mask, void *data);
+@@ -374,6 +382,7 @@ static void togglefloating(const Arg *arg);
+ static void togglefullscreen(const Arg *arg);
+ static void toggletag(const Arg *arg);
+ static void toggleview(const Arg *arg);
++static void togglewin(const Arg *arg);
+ static void unlocksession(struct wl_listener *listener, void *data);
+ static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
+ static void unmapnotify(struct wl_listener *listener, void *data);
+@@ -786,8 +795,28 @@ buttonpress(struct wl_listener *listener, void *data)
+ 				click = ClkLtSymbol;
+ 			else if (cx > selmon->b.width - (TEXTW(selmon, stext) - selmon->lrpad + 2)) {
+ 				click = ClkStatus;
+-			} else
+-				click = ClkTitle;
++			} else {
++                int nvis = selmon->b.bt;
++				int base = nvis ? selmon->b.btw / nvis : 0;
++				int remainder = nvis ? selmon->b.btw % nvis : 0;
++				int idx = 0;
++                int tabw = 0;
++
++                x += TEXTW(selmon, selmon->ltsymbol);
++                wl_list_for_each(c, &clients, link) {
++                    if (!VISIBLE(c, selmon))
++                        continue;
++                    tabw = base + (idx < remainder ? 1 : 0);
++                    idx++;
++                    x += tabw;
++                    if (cx < x) {
++                        arg.v = c;
++                        break;
++                    }
++                }
++                if (arg.v)
++                    click = ClkTitle;
++            }
+ 		}
+ 
+ 		/* Change focus if the button was _pressed_ over a client */
+@@ -799,7 +828,10 @@ buttonpress(struct wl_listener *listener, void *data)
+ 		mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
+ 		for (b = buttons; b < END(buttons); b++) {
+ 			if (CLEANMASK(mods) == CLEANMASK(b->mod) && event->button == b->button && click == b->click && b->func) {
+-				b->func(click == ClkTagBar && b->arg.i == 0 ? &arg : &b->arg);
++                if (click == ClkTitle && b->arg.i == 0)
++				    b->func(&arg);
++				else
++                    b->func(click == ClkTagBar && b->arg.i == 0 ? &arg : &b->arg);
+ 				return;
+ 			}
+ 		}
+@@ -1571,7 +1603,7 @@ dirtomon(enum wlr_direction dir)
+ void
+ drawbar(Monitor *m)
+ {
+-	int x, w, tw = 0;
++	int x, w, tw = 0, n = 0;
+ 	int boxs = m->drw->font->height / 9;
+ 	int boxw = m->drw->font->height / 6 + 2;
+ 	uint32_t i, occ = 0, urg = 0;
+@@ -1593,6 +1625,8 @@ drawbar(Monitor *m)
+ 	wl_list_for_each(c, &clients, link) {
+ 		if (c->mon != m)
+ 			continue;
++        if (VISIBLE(c, m))
++            n++;
+ 		occ |= c->tags;
+ 		if (c->isurgent)
+ 			urg |= c->tags;
+@@ -1614,17 +1648,35 @@ drawbar(Monitor *m)
+ 	x = drwl_text(m->drw, x, 0, w, m->b.height, m->lrpad / 2, m->ltsymbol, 0);
+ 
+ 	if ((w = m->b.width - tw - x) > m->b.height) {
+-		if (c) {
+-			drwl_setscheme(m->drw, colors[m == selmon ? SchemeSel : SchemeNorm]);
+-			drwl_text(m->drw, x, 0, w, m->b.height, m->lrpad / 2, client_get_title(c), 0);
+-			if (c && c->isfloating)
+-				drwl_rect(m->drw, x + boxs, boxs, boxw, boxw, 0, 0);
++        if (n > 0) {
++            int base = w / n;
++            int remainder = w % n;
++            int tabw;
++            int idx = 0;
++
++            wl_list_for_each(c, &clients, link) {
++                if (!VISIBLE(c, m))
++                    continue;
++                if (c == focustop(m))
++                    drwl_setscheme(m->drw, colors[SchemeSel]);
++                else if (c->ishidden)
++                    drwl_setscheme(m->drw, colors[SchemeHid]);
++                else
++                    drwl_setscheme(m->drw, colors[SchemeNorm]);
++		        tabw = base + (idx < remainder ? 1 : 0);
++		        idx++;
++                drwl_text(m->drw, x, 0, tabw, m->b.height, m->lrpad / 2, client_get_title(c), 0);
++                x += tabw;
++            }
+ 		} else {
+ 			drwl_setscheme(m->drw, colors[SchemeNorm]);
+ 			drwl_rect(m->drw, x, 0, w, m->b.height, 1, 1);
+ 		}
+ 	}
+ 
++    m->b.bt = n;
++    m->b.btw = w;
++
+ 	wlr_scene_buffer_set_dest_size(m->scene_buffer,
+ 		m->b.real_width, m->b.real_height);
+ 	wlr_scene_node_set_position(&m->scene_buffer->node, m->m.x,
+@@ -1677,7 +1729,12 @@ focusclient(Client *c, int lift)
+ 		 * handling a drag operation */
+ 		if (!exclusive_focus && !seat->drag)
+ 			client_set_border_color(c, (float[])COLOR(colors[SchemeSel][ColBorder]));
+-	}
++        if (c->ishidden) {
++            c->tempshow = 1;
++            c->ishidden = 0;
++            arrange(c->mon);
++        }
++    }
+ 
+ 	/* Deactivate old client if focus is changing */
+ 	if (old && (!c || client_surface(c) != old)) {
+@@ -1695,6 +1752,11 @@ focusclient(Client *c, int lift)
+ 		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
+ 			client_set_border_color(old_c, (float[])COLOR(colors[SchemeNorm][ColBorder]));
+ 			client_activate_surface(old, 0);
++            if (old_c->tempshow) {
++                old_c->tempshow = 0;
++                old_c->ishidden = 1;
++                arrange(old_c->mon);
++            }
+ 		}
+ 	}
+ 	drawbars();
+@@ -1728,24 +1790,37 @@ focusmon(const Arg *arg)
+ }
+ 
+ void
+-focusstack(const Arg *arg)
++focusstack(const Arg *arg, int hid)
+ {
+ 	/* Focus the next or previous client (in tiling order) on selmon */
+-	Client *c, *sel = focustop(selmon);
+-	if (!sel || (sel->isfullscreen && !client_has_children(sel)))
++	Client *c, *sel;
++
++    if (hid) {
++	    wl_list_for_each(sel, &fstack, flink)
++		    if (VISIBLE(sel, selmon))
++                break;
++    } else {
++        sel = focustop(selmon);
++    }
++
++    if (!sel || (sel->isfullscreen && !client_has_children(sel)))
+ 		return;
+ 	if (arg->i > 0) {
+ 		wl_list_for_each(c, &sel->link, link) {
+ 			if (&c->link == &clients)
+ 				continue; /* wrap past the sentinel node */
+-			if (VISIBLEON(c, selmon))
++			if (!hid && VISIBLEON(c, selmon))
++				break; /* found it */
++			if (hid && VISIBLE(c, selmon))
+ 				break; /* found it */
+ 		}
+ 	} else {
+ 		wl_list_for_each_reverse(c, &sel->link, link) {
+ 			if (&c->link == &clients)
+ 				continue; /* wrap past the sentinel node */
+-			if (VISIBLEON(c, selmon))
++			if (!hid && VISIBLEON(c, selmon))
++				break; /* found it */
++			if (hid && VISIBLE(c, selmon))
+ 				break; /* found it */
+ 		}
+ 	}
+@@ -1753,6 +1828,18 @@ focusstack(const Arg *arg)
+ 	focusclient(c, 1);
+ }
+ 
++void
++focusstackhid(const Arg *arg)
++{
++    focusstack(arg, 1);
++}
++
++void
++focusstackvis(const Arg *arg)
++{
++    focusstack(arg, 0);
++}
++
+ /* We probably should change the name of this: it sounds like it
+  * will focus the topmost client of this mon, when actually will
+  * only return that client */
+@@ -1808,6 +1895,21 @@ handlesig(int signo)
+ 		quit(NULL);
+ }
+ 
++void
++hide(const Arg *arg)
++{
++    Client *c = focustop(selmon);
++
++    if (!c || client_is_unmanaged(c) || c->isfullscreen)
++        return;
++
++    if (!c->ishidden && !c->tempshow) {
++        c->ishidden = 1;
++        arrange(c->mon);
++        focusclient(focustop(c->mon), 1);
++    }
++}
++
+ void
+ incnmaster(const Arg *arg)
+ {
+@@ -2869,6 +2971,38 @@ setup(void)
+ #endif
+ }
+ 
++void
++show(const Arg *arg)
++{
++    Client *c = focustop(selmon);
++
++    if (!c)
++        return;
++
++    if (c->tempshow) {
++        c->ishidden = 0;
++        c->tempshow = 0;
++        arrange(c->mon);
++    }
++}
++
++void
++showall(const Arg *arg)
++{
++    Client *c;
++
++    wl_list_for_each(c, &clients, link)
++        if (VISIBLE(c, selmon))
++            if (c->ishidden) {
++                c->ishidden = 0;
++                if (c->tempshow)
++                    c->tempshow = 0;
++            }
++
++    arrange(selmon);
++    focusclient(focustop(selmon), 1);
++}
++
+ void
+ spawn(const Arg *arg)
+ {
+@@ -3025,6 +3159,31 @@ toggleview(const Arg *arg)
+ 	drawbars();
+ }
+ 
++void
++togglewin(const Arg *arg)
++{
++    Client *c = (Client *)arg->v;
++
++    if (!c)
++        return;
++
++    if (c == focustop(selmon)) {
++        if (!c->ishidden && !client_is_unmanaged(c) && !c->isfullscreen) {
++            c->ishidden = 1;
++            c->tempshow = 0;
++            arrange(c->mon);
++            focusclient(focustop(c->mon), 1);
++        }
++    } else {
++        if (c->ishidden) {
++            c->ishidden = 0;
++            c->tempshow = 0;
++            arrange(c->mon);
++        }
++        focusclient(c, 1);
++    }
++}
++
+ void
+ unlocksession(struct wl_listener *listener, void *data)
+ {
+-- 
+2.55.0
+

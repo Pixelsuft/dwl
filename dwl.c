@@ -84,14 +84,15 @@
 
 /* macros */
 #define CLEANMASK(mask)         (mask & ~WLR_MODIFIER_CAPS)
-#define VISIBLEON(C, M)         ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]))
+#define VISIBLEON(C, M)         ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]) && !(C)->ishidden)
+#define VISIBLE(C, M)           ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]))
 #define TAGMASK                 ((1u << LENGTH(tags)) - 1)
 #define LISTEN(E, L, H)         wl_signal_add((E), ((L)->notify = (H), (L)))
 #define LISTEN_STATIC(E, H)     do { struct wl_listener *_l = ecalloc(1, sizeof(*_l)); _l->notify = (H); wl_signal_add((E), _l); } while (0)
 #define TEXTW(mon, text)        (drwl_font_getwidth(mon->drw, text) + mon->lrpad)
 
 /* enums */
-enum { SchemeNorm, SchemeSel, SchemeUrg }; /* color schemes */
+enum { SchemeNorm, SchemeSel, SchemeHid, SchemeUrg }; /* color schemes */
 enum { CurNormal, CurPressed, CurMove, CurResize }; /* cursor */
 enum { XDGShell, LayerShell, X11 }; /* client types */
 enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrTop, LyrFS, LyrUnmanaged, LyrOverlay,
@@ -167,6 +168,7 @@ typedef struct {
 	unsigned int bw;
 	uint32_t tags;
 	int isfloating, isurgent, isfullscreen;
+	int ishidden, tempshow;
 } Client;
 
 typedef struct {
@@ -235,6 +237,7 @@ struct Monitor {
 		int width, height;
 		int real_width, real_height; /* non-scaled */
 		float scale;
+        int bt, btw; /* awesome bar */
 	} b; /* bar area */
 	struct wlr_box w; /* window area, layout-relative */
 	struct wl_list layers[4]; /* LayerSurface.link */
@@ -339,11 +342,14 @@ static void drawbar(Monitor *m);
 static void drawbars(void);
 static void focusclient(Client *c, int lift);
 static void focusmon(const Arg *arg);
-static void focusstack(const Arg *arg);
+static void focusstack(const Arg *arg, int hid);
+static void focusstackhid(const Arg *arg);
+static void focusstackvis(const Arg *arg);
 static Client *focustop(Monitor *m);
 static void fullscreennotify(struct wl_listener *listener, void *data);
 static void gpureset(struct wl_listener *listener, void *data);
 static void handlesig(int signo);
+static void hide(const Arg *arg);
 static void incnmaster(const Arg *arg);
 static void inputdevice(struct wl_listener *listener, void *data);
 static const Key *keybinding(uint32_t mods, xkb_keysym_t sym);
@@ -383,6 +389,8 @@ static void setmon(Client *c, Monitor *m, uint32_t newtags);
 static void setpsel(struct wl_listener *listener, void *data);
 static void setsel(struct wl_listener *listener, void *data);
 static void setup(void);
+static void show(const Arg *arg);
+static void showall(const Arg *arg);
 static void spawn(const Arg *arg);
 static void startdrag(struct wl_listener *listener, void *data);
 static int statusin(int fd, unsigned int mask, void *data);
@@ -394,6 +402,7 @@ static void togglefloating(const Arg *arg);
 static void togglefullscreen(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
+static void togglewin(const Arg *arg);
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -850,8 +859,28 @@ buttonpress(struct wl_listener *listener, void *data)
 				click = ClkLtSymbol;
 			else if (cx > selmon->b.width - (TEXTW(selmon, stext) - selmon->lrpad + 2)) {
 				click = ClkStatus;
-			} else
-				click = ClkTitle;
+			} else {
+                int nvis = selmon->b.bt;
+				int base = nvis ? selmon->b.btw / nvis : 0;
+				int remainder = nvis ? selmon->b.btw % nvis : 0;
+				int idx = 0;
+                int tabw = 0;
+
+                x += TEXTW(selmon, selmon->ltsymbol);
+                wl_list_for_each(c, &clients, link) {
+                    if (!VISIBLE(c, selmon))
+                        continue;
+                    tabw = base + (idx < remainder ? 1 : 0);
+                    idx++;
+                    x += tabw;
+                    if (cx < x) {
+                        arg.v = c;
+                        break;
+                    }
+                }
+                if (arg.v)
+                    click = ClkTitle;
+            }
 		}
 
 		/* Change focus if the button was _pressed_ over a client
@@ -868,7 +897,10 @@ buttonpress(struct wl_listener *listener, void *data)
 		mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
 		for (b = buttons; b < END(buttons); b++) {
 			if (CLEANMASK(mods) == CLEANMASK(b->mod) && event->button == b->button && click == b->click && b->func) {
-				b->func(click == ClkTagBar && b->arg.i == 0 ? &arg : &b->arg);
+                if (click == ClkTitle && b->arg.i == 0)
+				    b->func(&arg);
+				else
+                    b->func(click == ClkTagBar && b->arg.i == 0 ? &arg : &b->arg);
 				return;
 			}
 		}
@@ -1675,7 +1707,7 @@ dirtomon(enum wlr_direction dir)
 void
 drawbar(Monitor *m)
 {
-	int x, w, tw = 0;
+	int x, w, tw = 0, n = 0;
 	int boxs = m->drw->font->height / 9;
 	int boxw = m->drw->font->height / 6 + 2;
 	uint32_t i, occ = 0, urg = 0;
@@ -1697,6 +1729,8 @@ drawbar(Monitor *m)
 	wl_list_for_each(c, &clients, link) {
 		if (c->mon != m)
 			continue;
+        if (VISIBLE(c, m))
+            n++;
 		occ |= c->tags;
 		if (c->isurgent)
 			urg |= c->tags;
@@ -1718,16 +1752,34 @@ drawbar(Monitor *m)
 	x = drwl_text(m->drw, x, 0, w, m->b.height, m->lrpad / 2, m->ltsymbol, 0);
 
 	if ((w = m->b.width - tw - x) > m->b.height) {
-		if (c) {
-			drwl_setscheme(m->drw, colors[m == selmon ? SchemeSel : SchemeNorm]);
-			drwl_text(m->drw, x, 0, w, m->b.height, m->lrpad / 2, client_get_title(c), 0);
-			if (c && c->isfloating)
-				drwl_rect(m->drw, x + boxs, boxs, boxw, boxw, 0, 0);
+        if (n > 0) {
+            int base = w / n;
+            int remainder = w % n;
+            int tabw;
+            int idx = 0;
+
+            wl_list_for_each(c, &clients, link) {
+                if (!VISIBLE(c, m))
+                    continue;
+                if (c == focustop(m))
+                    drwl_setscheme(m->drw, colors[SchemeSel]);
+                else if (c->ishidden)
+                    drwl_setscheme(m->drw, colors[SchemeHid]);
+                else
+                    drwl_setscheme(m->drw, colors[SchemeNorm]);
+		        tabw = base + (idx < remainder ? 1 : 0);
+		        idx++;
+                drwl_text(m->drw, x, 0, tabw, m->b.height, m->lrpad / 2, client_get_title(c), 0);
+                x += tabw;
+            }
 		} else {
 			drwl_setscheme(m->drw, colors[SchemeNorm]);
 			drwl_rect(m->drw, x, 0, w, m->b.height, 1, 1);
 		}
 	}
+
+    m->b.bt = n;
+    m->b.btw = w;
 
 	wlr_scene_buffer_set_dest_size(m->scene_buffer,
 		m->b.real_width, m->b.real_height);
@@ -1784,7 +1836,12 @@ focusclient(Client *c, int lift)
 		 * handling a drag operation */
 		if (!exclusive_focus && !seat->drag)
 			client_set_border_color(c, (float[])COLOR(colors[SchemeSel][ColBorder]));
-	}
+        if (c->ishidden) {
+            c->tempshow = 1;
+            c->ishidden = 0;
+            arrange(c->mon);
+        }
+    }
 
 	/* If an overlay is focused, don't focus or activate the client,
 	 * but only update its position in fstack to render its border with focuscolor
@@ -1802,6 +1859,11 @@ focusclient(Client *c, int lift)
 			client_set_border_color(old_c, (float[])COLOR(colors[SchemeNorm][ColBorder]));
 		if (s && s->mapped)
 			client_activate_surface(s, 0);
+		if (old_c->tempshow) {
+		    old_c->tempshow = 0;
+			old_c->ishidden = 1;
+			arrange(old_c->mon);
+		}
 		focused_client = NULL;
 	}
 	drawbars();
@@ -1841,29 +1903,54 @@ focusmon(const Arg *arg)
 }
 
 void
-focusstack(const Arg *arg)
+focusstack(const Arg *arg, int hid)
 {
 	/* Focus the next or previous client (in tiling order) on selmon */
-	Client *c, *sel = focustop(selmon);
-	if (!sel || (sel->isfullscreen && !client_has_children(sel)))
+	Client *c, *sel;
+
+    if (hid) {
+	    wl_list_for_each(sel, &fstack, flink)
+		    if (VISIBLE(sel, selmon))
+                break;
+    } else {
+        sel = focustop(selmon);
+    }
+
+    if (!sel || (sel->isfullscreen && !client_has_children(sel)))
 		return;
 	if (arg->i > 0) {
 		wl_list_for_each(c, &sel->link, link) {
 			if (&c->link == &clients)
 				continue; /* wrap past the sentinel node */
-			if (VISIBLEON(c, selmon))
+			if (!hid && VISIBLEON(c, selmon))
+				break; /* found it */
+			if (hid && VISIBLE(c, selmon))
 				break; /* found it */
 		}
 	} else {
 		wl_list_for_each_reverse(c, &sel->link, link) {
 			if (&c->link == &clients)
 				continue; /* wrap past the sentinel node */
-			if (VISIBLEON(c, selmon))
+			if (!hid && VISIBLEON(c, selmon))
+				break; /* found it */
+			if (hid && VISIBLE(c, selmon))
 				break; /* found it */
 		}
 	}
 	/* If only one client is visible on selmon, then c == sel */
 	focusclient(c, 1);
+}
+
+void
+focusstackhid(const Arg *arg)
+{
+    focusstack(arg, 1);
+}
+
+void
+focusstackvis(const Arg *arg)
+{
+    focusstack(arg, 0);
 }
 
 /* We probably should change the name of this: it sounds like it
@@ -1919,6 +2006,21 @@ handlesig(int signo)
 		while (waitpid(-1, NULL, WNOHANG) > 0);
 	else if (signo == SIGINT || signo == SIGTERM)
 		quit(NULL);
+}
+
+void
+hide(const Arg *arg)
+{
+    Client *c = focustop(selmon);
+
+    if (!c || client_is_unmanaged(c) || c->isfullscreen)
+        return;
+
+    if (!c->ishidden && !c->tempshow) {
+        c->ishidden = 1;
+        arrange(c->mon);
+        focusclient(focustop(c->mon), 1);
+    }
 }
 
 void
@@ -3039,6 +3141,38 @@ setup(void)
 }
 
 void
+show(const Arg *arg)
+{
+    Client *c = focustop(selmon);
+
+    if (!c)
+        return;
+
+    if (c->tempshow) {
+        c->ishidden = 0;
+        c->tempshow = 0;
+        arrange(c->mon);
+    }
+}
+
+void
+showall(const Arg *arg)
+{
+    Client *c;
+
+    wl_list_for_each(c, &clients, link)
+        if (VISIBLE(c, selmon))
+            if (c->ishidden) {
+                c->ishidden = 0;
+                if (c->tempshow)
+                    c->tempshow = 0;
+            }
+
+    arrange(selmon);
+    focusclient(focustop(selmon), 1);
+}
+
+void
 spawn(const Arg *arg)
 {
 	if (fork() == 0) {
@@ -3192,6 +3326,31 @@ toggleview(const Arg *arg)
 	focusclient(focustop(selmon), 1);
 	arrange(selmon);
 	drawbars();
+}
+
+void
+togglewin(const Arg *arg)
+{
+    Client *c = (Client *)arg->v;
+
+    if (!c)
+        return;
+
+    if (c == focustop(selmon)) {
+        if (!c->ishidden && !client_is_unmanaged(c) && !c->isfullscreen) {
+            c->ishidden = 1;
+            c->tempshow = 0;
+            arrange(c->mon);
+            focusclient(focustop(c->mon), 1);
+        }
+    } else {
+        if (c->ishidden) {
+            c->ishidden = 0;
+            c->tempshow = 0;
+            arrange(c->mon);
+        }
+        focusclient(c, 1);
+    }
 }
 
 void
