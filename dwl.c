@@ -3195,7 +3195,7 @@ setup(void)
 	 * let us know when new input devices are available on the backend.
 	 */
 	en_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	en_rules = xkb_rules;
+	en_rules = *xkb_rules;
 	en_rules.layout = "us";
 	en_keymap = xkb_keymap_new_from_names(en_context, &en_rules,
 		XKB_KEYMAP_COMPILE_NO_FLAGS);
