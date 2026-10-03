@@ -51,7 +51,7 @@ static const Env envs[] = {
 	{ "SDL_AUDIODRIVER", "pipewire" },
 	// Force adwaita
 	{ "QT_QPA_PLATFORMTHEME", "qt6ct" },
-	{ "GTK_THEME", "Adwaita" }
+	{ "GTK_THEME", "Adwaita:dark" }
 };
 
 static const Rule rules[] = {
